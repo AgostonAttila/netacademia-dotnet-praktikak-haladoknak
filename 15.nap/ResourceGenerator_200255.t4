@@ -1,0 +1,323 @@
+﻿<#@ assembly name="System.Data" #>
+<#@ assembly name="System.Web" #>
+<#@ assembly name="System.Configuration" #>
+<#@ import namespace="System.Web.Configuration" #>
+<#@ import namespace="System.IO" #>
+<#@ Assembly Name="System.Core.dll" #>
+<#@ assembly name="EnvDTE" #>
+<#@ Assembly Name="System.Windows.Forms.dll" #>
+<#@ Assembly name="System.Configuration"#>
+<#@ Assembly name="System.Xml"#>
+<#@ import namespace="System" #>
+<#@ import namespace="System.IO" #>
+<#@ import namespace="System.Diagnostics" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="System.Xml.Serialization" #>
+<#@ import namespace="System.Collections" #>
+<#@ import namespace="System.Collections.Specialized"#>
+<#@ import namespace="System.Collections.Generic" #> 
+<#@ import namespace="System.Configuration" #>
+<# 
+var rc = new System.Text.RegularExpressions.Regex(@"#(?<name>[a-zA-Z]*)");
+var resxFolder = Host.ResolvePath(@"");
+var classNamespace = (string)System.Runtime.Remoting.Messaging.CallContext.LogicalGetData("NamespaceHint");
+var namespaceParts = classNamespace.Split(new string[] { "." }, StringSplitOptions.RemoveEmptyEntries);
+string schema = "dbo";
+string table = "Res";
+if (namespaceParts.Length > 1)
+{
+	schema = namespaceParts[namespaceParts.Length-2];
+}
+table = namespaceParts[namespaceParts.Length-1];
+if (namespaceParts.Length > 1) //az utolsó névtér darab ne legyen névtér, csak táblanévnek használjuk
+{
+	classNamespace = classNamespace.Substring(0, classNamespace.Length - table.Length - 1);
+}
+
+var ser = new XmlSerializer(typeof(root));
+#>
+using System.Web.Configuration;
+using System.Collections.Generic;
+using System;
+using System.Reflection;
+using Tocsi.Web.Mvc.Resources;
+
+namespace <#=classNamespace#>
+{
+<#
+	var resxPath = Path.ChangeExtension(Host.TemplateFile,".resx");
+	var className = Path.GetFileNameWithoutExtension(resxPath);#>
+	public partial class <#=className#>:IStringResource
+	{
+	
+		static DatabaseResourceRepository resourceReader = new DatabaseResourceRepository();
+
+		/// <summary>
+		/// Kitörli a memóriából az adatokat, hogy legközelebbi eléréskor újra frissen olvassa be
+		/// </summary>
+		public static void Reset()
+		{
+			resourceReader.InvalidateResourceCache("<#=schema#>.<#=table#>", "<#=className#>");
+		}
+
+		/// <summary>
+		/// Szöveges resource enum neve alapján
+		/// </summary>
+		/// <param name="key">
+		/// Az enum érték aminek a nevével megegyező nevű resourcet keressük (nem case sensitive)
+		/// </param>
+		public static string GetForEnum(Enum key)
+		{
+			string val;
+			try
+			{
+				PropertyInfo prop = typeof(<#=classNamespace#>.<#=className#>).GetProperty(key.ToString(), System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | BindingFlags.IgnoreCase | BindingFlags.FlattenHierarchy);
+				val = (string)prop.GetValue(null, null);
+			}
+			catch
+			{
+				val = resourceReader.GetResourceString("<#=schema#>.<#=table#>", "<#=className#>", key.ToString());
+			}
+			return val;
+		}
+
+<# 
+		using (var reader = File.OpenRead(resxPath))
+		{
+			var resourceFile = (root)ser.Deserialize(reader);
+			IEnumerable<rootData> resourceItems;
+
+			if(resourceFile.Items == null || resourceFile.Items.Count() == 0)
+			{
+				resourceItems = new List<rootData>();
+			}
+			else
+			{
+				resourceItems = resourceFile.Items.OfType<rootData>();
+			}
+
+			foreach (var item in resourceItems)
+			{
+
+				bool isHtmlString = false;
+				Dictionary<string, string> formatParameters = new Dictionary<string, string>();
+				string paramlist = "";
+
+				if (!string.IsNullOrWhiteSpace(item.comment))  //van comment
+				{
+					isHtmlString = item.comment.StartsWith("html:", StringComparison.InvariantCultureIgnoreCase);
+					if (isHtmlString)
+					{
+						item.comment = item.comment.Substring(5);
+					}
+
+					string[] splitted = new string[0];
+					var hasParams = rc.IsMatch(item.comment);
+					string[] commentLines;
+
+					if (hasParams)
+					{
+						splitted = rc.Split(item.comment);
+						commentLines = splitted[0].Split(new string[] { Environment.NewLine,"\n" }, StringSplitOptions.RemoveEmptyEntries); 
+					}					
+					else
+					{
+						commentLines = item.comment.Split(new string[] { Environment.NewLine,"\n" }, StringSplitOptions.RemoveEmptyEntries);
+					} #>
+		///<summary>
+<#		   			foreach(var commentLine in commentLines)
+					{
+#>
+		/// <para><#=commentLine#></para>
+<#					}#>
+		///</summary>
+<#
+					if (hasParams)
+					{
+						//van benne format parameter
+						var methodComment = splitted[0];
+
+						for (int i = 1; i < splitted.Length; i += 2)
+						{
+							formatParameters[splitted[i]] = splitted[i + 1];
+						}
+						paramlist = string.Join(", ", formatParameters.Keys.Select(k => "object " + k).ToArray());
+
+						foreach (var formatParam in formatParameters)
+						{
+							string[] paramLines = formatParam.Value.Split(new string[] { Environment.NewLine,"\n" }, StringSplitOptions.RemoveEmptyEntries);
+#>
+		///<param name="<#=formatParam.Key#>">
+<#							foreach(var paramLine in paramLines) {#>
+		///<para><#=paramLine#></para>
+<#							}#>
+		///</param>
+<#
+						}
+
+					} //if van a commentben parameter
+
+				} //if van comment T4
+				
+				if(!string.IsNullOrWhiteSpace(paramlist))
+				{
+#>
+		[ResourceInfo(<#=item.value == null ? "null" : @"@""" + item.value.Replace("\"", "\"\"") +  @""""#>,<#=item.comment == null ? "null" : @"@""" + item.comment.Replace("\"", "\"\"") +  @""""#>)]
+		public static <#if (isHtmlString) {#>System.Web.Mvc.MvcHtmlString<#} else {#>string<#}#> <#=item.name#>(<#= paramlist#>)
+		{
+			var result = resourceReader.GetResourceString("<#=schema#>.<#=table#>", "<#=className#>", "<#=item.name#>", <#=item.value == null ? "null" : @"@""" + item.value.Replace("\"", "\"\"") +  @""""#> , <#=item.comment == null ? "null" : @"@""" + item.comment.Replace("\"", "\"\"") +  @""""#>, <#=isHtmlString.ToString().ToLower()#> ); 
+<#
+	foreach (var formatParam in formatParameters)
+    {
+#>
+			result = result.Replace("#<#=formatParam.Key#>", string.Format("{0}",<#=formatParam.Key#>));
+<#
+    }
+	if (isHtmlString) {#>
+			return new System.Web.Mvc.MvcHtmlString(result);
+<#				} else {#>
+			return  result;  
+<#				}#>
+		}
+
+<#
+				}//if van paramlista T4
+				else
+				{
+#>
+		[ResourceInfo(<#=item.value == null ? "null" : @"@""" + item.value.Replace("\"", "\"\"") +  @""""#>,<#=item.comment == null ? "null" : @"@""" + item.comment.Replace("\"", "\"\"") +  @""""#>)]
+		public static <#if (isHtmlString) {#>System.Web.Mvc.MvcHtmlString<#} else {#>string<#}#> <#=item.name#>
+		{
+			get 
+			{ 
+				var result = resourceReader.GetResourceString("<#=schema#>.<#=table#>", "<#=className#>", "<#=item.name#>", <#=item.value == null ? "null" : @"@""" + item.value.Replace("\"", "\"\"") +  @""""#> , <#=item.comment == null ? "null" : @"@""" + item.comment.Replace("\"", "\"\"") +  @""""#>, <#=isHtmlString.ToString().ToLower()#>); 
+<#if (isHtmlString) {#>
+				return new System.Web.Mvc.MvcHtmlString(result);
+<#				} else {#>
+				return  result;  
+<#				}#>
+			}
+		}
+
+<#
+				}
+			}// foreach property T4
+		}
+#>
+	}
+}
+
+<#+
+/// <remarks/>
+[System.CodeDom.Compiler.GeneratedCodeAttribute("xsd", "4.0.30319.1")]
+[System.SerializableAttribute()]
+[System.Diagnostics.DebuggerStepThroughAttribute()]
+[System.ComponentModel.DesignerCategoryAttribute("code")]
+[System.Xml.Serialization.XmlTypeAttribute(AnonymousType=true)]
+[System.Xml.Serialization.XmlRootAttribute(Namespace="", IsNullable=false)]
+public partial class root {
+    
+    private rootData[] itemsField;
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlElementAttribute("data", Form=System.Xml.Schema.XmlSchemaForm.Unqualified)]
+    public rootData[] Items {
+        get {
+            return this.itemsField;
+        }
+        set {
+            this.itemsField = value;
+        }
+    }
+}
+
+/// <remarks/>
+[System.CodeDom.Compiler.GeneratedCodeAttribute("xsd", "4.0.30319.1")]
+[System.SerializableAttribute()]
+[System.Diagnostics.DebuggerStepThroughAttribute()]
+[System.ComponentModel.DesignerCategoryAttribute("code")]
+[System.Xml.Serialization.XmlTypeAttribute(AnonymousType=true)]
+public partial class rootData {
+    
+    private string valueField;
+    
+    private string commentField;
+    
+    private string nameField;
+    
+    private string typeField;
+    
+    private string mimetypeField;
+    
+    private string spaceField;
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlElementAttribute(Form=System.Xml.Schema.XmlSchemaForm.Unqualified)]
+    public string value {
+        get {
+            return this.valueField;
+        }
+        set {
+            this.valueField = value;
+        }
+    }
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlElementAttribute(Form=System.Xml.Schema.XmlSchemaForm.Unqualified)]
+    public string comment {
+        get {
+            return this.commentField;
+        }
+        set {
+            this.commentField = value;
+        }
+    }
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlAttributeAttribute()]
+    public string name {
+        get {
+            return this.nameField;
+        }
+        set {
+            this.nameField = value;
+        }
+    }
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlAttributeAttribute()]
+    public string type {
+        get {
+            return this.typeField;
+        }
+        set {
+            this.typeField = value;
+        }
+    }
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlAttributeAttribute()]
+    public string mimetype {
+        get {
+            return this.mimetypeField;
+        }
+        set {
+            this.mimetypeField = value;
+        }
+    }
+    
+    /// <remarks/>
+    [System.Xml.Serialization.XmlAttributeAttribute(Form=System.Xml.Schema.XmlSchemaForm.Qualified, Namespace="http://www.w3.org/XML/1998/namespace")]
+    public string space {
+        get {
+            return this.spaceField;
+        }
+        set {
+            this.spaceField = value;
+        }
+    }
+}
+
+#>
+
+
